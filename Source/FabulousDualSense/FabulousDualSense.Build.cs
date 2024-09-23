@@ -5,14 +5,19 @@ public class FabulousDualSense : ModuleRules
 	public FabulousDualSense(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_2;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_4;
 
 		bEnableNonInlinedGenCppWarnings = true;
+		// UnsafeTypeCastWarningLevel = WarningLevel.Warning;
+
+		PublicDependencyModuleNames.AddRange(new[]
+		{
+			"Core", "CoreUObject", "Engine", "DeveloperSettings"
+		});
 
 		PrivateDependencyModuleNames.AddRange(new[]
 		{
-			"Core", "CoreUObject", "Engine", "ApplicationCore", "InputCore",
-			"InputDevice", "SlateCore", "Slate", "DeveloperSettings", "DualSenseWindows"
+			"ApplicationCore", "InputCore", "InputDevice", "SlateCore", "Slate", "DualSenseWindows"
 		});
 	}
 }

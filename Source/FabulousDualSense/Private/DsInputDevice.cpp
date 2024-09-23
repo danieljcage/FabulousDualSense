@@ -7,6 +7,7 @@
 #include "GameFramework/InputSettings.h"
 #include "GenericPlatform/IInputInterface.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/EnumerateRange.h"
 
 FDsInputDevice::FDsInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& MessageHandler) : MessageHandler{MessageHandler}
 {
@@ -20,15 +21,15 @@ FDsInputDevice::~FDsInputDevice()
 {
 	auto& InputDeviceMapper{IPlatformInputDeviceMapper::Get()};
 
-	for (auto ControllerId{0}; ControllerId < DsConstants::MaxDevicesCount; ControllerId++)
+	for (const auto DeviceContext : EnumerateRange(DeviceContexts))
 	{
-		if (DeviceContexts[ControllerId]._internal.connected)
+		if (DeviceContext->_internal.connected)
 		{
 			auto PlatformUserId{PLATFORMUSERID_NONE};
 			auto InputDeviceId{INPUTDEVICEID_NONE};
-			InputDeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, PlatformUserId, InputDeviceId);
+			InputDeviceMapper.RemapControllerIdToPlatformUserAndDevice(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId);
 
-			DisconnectDevice(InputDeviceMapper, ControllerId, PlatformUserId, InputDeviceId);
+			DisconnectDevice(InputDeviceMapper, DeviceContext.GetIndex(), PlatformUserId, InputDeviceId);
 		}
 	}
 }
@@ -44,24 +45,26 @@ void FDsInputDevice::SendControllerEvents()
 
 	auto& InputDeviceMapper{IPlatformInputDeviceMapper::Get()};
 
-	for (auto ControllerId{0}; ControllerId < DsConstants::MaxDevicesCount; ControllerId++)
+	for (const auto DeviceContext : EnumerateRange(DeviceContexts))
 	{
-		if (!DeviceContexts[ControllerId]._internal.connected)
+		if (!DeviceContext->_internal.connected)
 		{
 			continue;
 		}
 
-		FInputDeviceScope InputDeviceScope{this, DsConstants::InputDeviceName, ControllerId, DsConstants::HardwareDeviceIdentifier};
+		FInputDeviceScope InputDeviceScope{
+			this, DsConstants::InputDeviceName, DeviceContext.GetIndex(), DsConstants::HardwareDeviceIdentifier
+		};
 
 		auto PlatformUserId{PLATFORMUSERID_NONE};
 		auto InputDeviceId{INPUTDEVICEID_NONE};
-		InputDeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, PlatformUserId, InputDeviceId);
+		InputDeviceMapper.RemapControllerIdToPlatformUserAndDevice(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId);
 
-		const auto PreviousInput{InputStates[ControllerId]};
+		const auto PreviousInput{InputStates[DeviceContext.GetIndex()]};
 
-		auto& Context{DeviceContexts[ControllerId]};
-		auto& Input{InputStates[ControllerId]};
-		auto& Output{OutputStates[ControllerId]};
+		auto& Context{DeviceContexts[DeviceContext.GetIndex()]};
+		auto& Input{InputStates[DeviceContext.GetIndex()]};
+		auto& Output{OutputStates[DeviceContext.GetIndex()]};
 
 		const auto ReadInputResult{getDeviceInputState(&Context, &Input)};
 		if (DS5W_FAILED(ReadInputResult))
@@ -69,7 +72,7 @@ void FDsInputDevice::SendControllerEvents()
 			UE_LOG(LogFabulousDualSense, Warning, TEXT("Failed to read device input state: %s, Device: %s."),
 			       DsUtility::ReturnValueToString(ReadInputResult).GetData(), Context._internal.devicePath);
 
-			DisconnectDevice(InputDeviceMapper, ControllerId, PlatformUserId, InputDeviceId);
+			DisconnectDevice(InputDeviceMapper, DeviceContext.GetIndex(), PlatformUserId, InputDeviceId);
 			continue;
 		}
 
@@ -95,13 +98,39 @@ void FDsInputDevice::SendControllerEvents()
 			                                   Input.rightTrigger / static_cast<float>(TNumericLimits<uint8>::Max()));
 		}
 
+		// Gyroscope.
+
+		if (PreviousInput.gyroscope.x != Input.gyroscope.x)
+		{
+			// Gyroscope X represents Unreal Engine's pitch axis.
+
+			MessageHandler->OnControllerAnalog(DsConstants::GyroscopeAxisPitchKey.GetFName(),
+			                                   PlatformUserId, InputDeviceId, Input.gyroscope.x * 0.0001f);
+		}
+
+		if (PreviousInput.gyroscope.y != Input.gyroscope.y)
+		{
+			// Gyroscope Y represents Unreal Engine's yaw axis.
+
+			MessageHandler->OnControllerAnalog(DsConstants::GyroscopeAxisYawKey.GetFName(),
+			                                   PlatformUserId, InputDeviceId, Input.gyroscope.y * 0.0001f);
+		}
+
+		if (PreviousInput.gyroscope.z != Input.gyroscope.z)
+		{
+			// Gyroscope Z represents Unreal Engine's roll axis.
+
+			MessageHandler->OnControllerAnalog(DsConstants::GyroscopeAxisRollKey.GetFName(),
+			                                   PlatformUserId, InputDeviceId, Input.gyroscope.z * 0.0001f);
+		}
+
 		// Regular buttons.
 
 		auto ButtonIndex{0};
 
 		for (const auto& [ButtonName, ButtonFlag] : DsConstants::GetRegularButtons())
 		{
-			ProcessButton(ControllerId, PlatformUserId, InputDeviceId, ButtonName, ButtonIndex,
+			ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, ButtonName, ButtonIndex,
 			              (PreviousInput.buttonMap & ButtonFlag) > 0,
 			              (Input.buttonMap & ButtonFlag) > 0, Time);
 			ButtonIndex += 1;
@@ -109,46 +138,47 @@ void FDsInputDevice::SendControllerEvents()
 
 		// Virtual buttons.
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickUp, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickUp, ButtonIndex,
 		              PreviousInput.leftStick.y > DsConstants::StickDeadZone, Input.leftStick.y > DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickDown, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickDown, ButtonIndex,
 		              PreviousInput.leftStick.y < -DsConstants::StickDeadZone, Input.leftStick.y < -DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickLeft, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickLeft, ButtonIndex,
 		              PreviousInput.leftStick.x < -DsConstants::StickDeadZone, Input.leftStick.x < -DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickRight, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::LeftStickRight, ButtonIndex,
 		              PreviousInput.leftStick.x > DsConstants::StickDeadZone, Input.leftStick.x > DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickUp, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickUp, ButtonIndex,
 		              PreviousInput.rightStick.y > DsConstants::StickDeadZone, Input.rightStick.y > DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickDown, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickDown, ButtonIndex,
 		              PreviousInput.rightStick.y < -DsConstants::StickDeadZone, Input.rightStick.y < -DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickLeft, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickLeft, ButtonIndex,
 		              PreviousInput.rightStick.x < -DsConstants::StickDeadZone, Input.rightStick.x < -DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickRight, ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, FGamepadKeyNames::RightStickRight, ButtonIndex,
 		              PreviousInput.rightStick.x > DsConstants::StickDeadZone, Input.rightStick.x > DsConstants::StickDeadZone, Time);
 		ButtonIndex += 1;
 
 		// Touch pad.
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, DsConstants::Touch1Key.GetFName(), ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, DsConstants::Touch1Key.GetFName(), ButtonIndex,
 		              PreviousInput.touchPoint1.down, Input.touchPoint1.down, Time);
 		ButtonIndex += 1;
 
-		ProcessButton(ControllerId, PlatformUserId, InputDeviceId, DsConstants::Touch2Key.GetFName(), ButtonIndex,
+		ProcessButton(DeviceContext.GetIndex(), PlatformUserId, InputDeviceId, DsConstants::Touch2Key.GetFName(), ButtonIndex,
 		              PreviousInput.touchPoint2.down, Input.touchPoint2.down, Time);
+		// ReSharper disable once CppAssignedValueIsNeverUsed
 		ButtonIndex += 1;
 
 		ProcessTouch(PlatformUserId, InputDeviceId, DsConstants::Touch1AxisXKey.GetFName(),
@@ -168,7 +198,7 @@ void FDsInputDevice::SendControllerEvents()
 			}
 		}
 
-		if (ExtraStates[ControllerId].bOutputChanged)
+		if (ExtraStates[DeviceContext.GetIndex()].bOutputChanged)
 		{
 			const auto WriteOutputResult{setDeviceOutputState(&Context, &Output)};
 			if (DS5W_FAILED(WriteOutputResult))
@@ -176,7 +206,7 @@ void FDsInputDevice::SendControllerEvents()
 				UE_LOG(LogFabulousDualSense, Warning, TEXT("Failed to write device output state: %s, Device: %s."),
 				       DsUtility::ReturnValueToString(ReadInputResult).GetData(), Context._internal.devicePath);
 
-				DisconnectDevice(InputDeviceMapper, ControllerId, PlatformUserId, InputDeviceId);
+				DisconnectDevice(InputDeviceMapper, DeviceContext.GetIndex(), PlatformUserId, InputDeviceId);
 			}
 		}
 	}
@@ -220,8 +250,10 @@ void FDsInputDevice::SetChannelValue(const int32 ControllerId, const FForceFeedb
 			break;
 	}
 
+	// ReSharper disable CppRedundantCastExpression
 	const auto NewForceFeedbackLeft{static_cast<unsigned char>(FMath::Max(Extra.ForceFeedbackLeftLarge, Extra.ForceFeedbackLeftSmall))};
 	const auto NewForceFeedbackRight{static_cast<unsigned char>(FMath::Max(Extra.ForceFeedbackRightLarge, Extra.ForceFeedbackRightSmall))};
+	// ReSharper restore CppRedundantCastExpression
 
 	auto& Output{OutputStates[ControllerId]};
 
@@ -245,8 +277,10 @@ void FDsInputDevice::SetChannelValues(const int32 ControllerId, const FForceFeed
 	Extra.ForceFeedbackRightLarge = static_cast<uint8>(Values.RightLarge * TNumericLimits<uint8>::Max());
 	Extra.ForceFeedbackRightSmall = static_cast<uint8>(Values.RightSmall * TNumericLimits<uint8>::Max());
 
+	// ReSharper disable CppRedundantCastExpression
 	const auto NewForceFeedbackLeft{static_cast<unsigned char>(FMath::Max(Extra.ForceFeedbackLeftLarge, Extra.ForceFeedbackLeftSmall))};
 	const auto NewForceFeedbackRight{static_cast<unsigned char>(FMath::Max(Extra.ForceFeedbackRightLarge, Extra.ForceFeedbackRightSmall))};
+	// ReSharper restore CppRedundantCastExpression
 
 	auto& Output{OutputStates[ControllerId]};
 
@@ -326,9 +360,9 @@ bool FDsInputDevice::IsGamepadAttached() const
 {
 	auto bResult{false};
 
-	for (auto i{0}; i < DsConstants::MaxDevicesCount; i++)
+	for (const auto DeviceContext : EnumerateRange(DeviceContexts))
 	{
-		bResult |= DeviceContexts[i]._internal.connected;
+		bResult |= DeviceContext->_internal.connected;
 	}
 
 	return bResult;
@@ -336,23 +370,24 @@ bool FDsInputDevice::IsGamepadAttached() const
 
 void FDsInputDevice::RefreshDevices()
 {
-	static unsigned int KnownDeviceIds[DsConstants::MaxDevicesCount];
+	static TStaticArray<unsigned int, DsConstants::MaxDevicesCount> KnownDeviceIds;
 	unsigned int KnowDevicesCount{0};
 
-	for (auto i{0}; i < DsConstants::MaxDevicesCount; i++)
+	for (const auto DeviceContext : EnumerateRange(DeviceContexts))
 	{
-		if (DeviceContexts[i]._internal.connected)
+		if (DeviceContext->_internal.connected)
 		{
-			KnownDeviceIds[i] = DeviceContexts[i]._internal.uniqueID;
+			KnownDeviceIds[DeviceContext.GetIndex()] = DeviceContext->_internal.uniqueID;
 			KnowDevicesCount += 1;
 		}
 	}
 
-	static DS5W::DeviceEnumInfo DeviceInfos[DsConstants::MaxDevicesCount];
+	static TStaticArray<DS5W::DeviceEnumInfo, DsConstants::MaxDevicesCount> DeviceInfos;
+
 	unsigned int DevicesCount{0};
 
 	const auto EnumDevicesResult{
-		enumUnknownDevices(DeviceInfos, DsConstants::MaxDevicesCount, KnownDeviceIds, KnowDevicesCount, &DevicesCount)
+		enumUnknownDevices(DeviceInfos.GetData(), DsConstants::MaxDevicesCount, KnownDeviceIds.GetData(), KnowDevicesCount, &DevicesCount)
 	};
 
 	switch (EnumDevicesResult)
@@ -377,15 +412,15 @@ void FDsInputDevice::RefreshDevices()
 
 	for (unsigned int DeviceIndex{0}; DeviceIndex < DevicesCount; DeviceIndex++)
 	{
-		for (auto ControllerId{0}; ControllerId < DsConstants::MaxDevicesCount; ControllerId++)
+		for (const auto DeviceContext : EnumerateRange(DeviceContexts))
 		{
-			if (DeviceContexts[ControllerId]._internal.uniqueID == DeviceInfos[DeviceIndex]._internal.uniqueID)
+			if (DeviceContext->_internal.uniqueID == DeviceInfos[DeviceIndex]._internal.uniqueID)
 			{
 				ProcessedDeviceIndexes[DeviceIndex] = true;
 
-				if (!DeviceContexts[ControllerId]._internal.connected)
+				if (!DeviceContext->_internal.connected)
 				{
-					ConnectDevice(InputDeviceMapper, DeviceInfos[DeviceIndex], ControllerId);
+					ConnectDevice(InputDeviceMapper, DeviceInfos[DeviceIndex], DeviceContext.GetIndex());
 				}
 
 				break;
@@ -403,13 +438,13 @@ void FDsInputDevice::RefreshDevices()
 			continue;
 		}
 
-		for (auto ControllerId{0}; ControllerId < DsConstants::MaxDevicesCount; ControllerId++)
+		for (const auto DeviceContext : EnumerateRange(DeviceContexts))
 		{
-			if (DeviceContexts[ControllerId]._internal.uniqueID == 0)
+			if (DeviceContext->_internal.uniqueID == 0)
 			{
 				ProcessedDeviceIndexes[DeviceIndex] = true;
 
-				ConnectDevice(InputDeviceMapper, DeviceInfos[DeviceIndex], ControllerId);
+				ConnectDevice(InputDeviceMapper, DeviceInfos[DeviceIndex], DeviceContext.GetIndex());
 				break;
 			}
 		}
@@ -425,13 +460,13 @@ void FDsInputDevice::RefreshDevices()
 			continue;
 		}
 
-		for (auto ControllerId{0}; ControllerId < DsConstants::MaxDevicesCount; ControllerId++)
+		for (const auto DeviceContext : EnumerateRange(DeviceContexts))
 		{
-			if (!DeviceContexts[ControllerId]._internal.connected)
+			if (!DeviceContext->_internal.connected)
 			{
 				ProcessedDeviceIndexes[DeviceIndex] = true;
 
-				ConnectDevice(InputDeviceMapper, DeviceInfos[DeviceIndex], ControllerId);
+				ConnectDevice(InputDeviceMapper, DeviceInfos[DeviceIndex], DeviceContext.GetIndex());
 				break;
 			}
 		}
@@ -583,13 +618,13 @@ void FDsInputDevice::ProcessTouch(const FPlatformUserId PlatformUserId, const FI
 	const auto TouchAxisX{static_cast<int32>(NewTouch.x - PreviousTouch.x)};
 	if (TouchAxisX != 0)
 	{
-		MessageHandler->OnControllerAnalog(AxisXKeyName, PlatformUserId, InputDeviceId, TouchAxisX);
+		MessageHandler->OnControllerAnalog(AxisXKeyName, PlatformUserId, InputDeviceId, static_cast<float>(TouchAxisX));
 	}
 
 	const auto TouchAxisY{static_cast<int32>(NewTouch.y - PreviousTouch.y)};
 	if (TouchAxisY != 0)
 	{
-		MessageHandler->OnControllerAnalog(AxisYKeyName, PlatformUserId, InputDeviceId, TouchAxisY);
+		MessageHandler->OnControllerAnalog(AxisYKeyName, PlatformUserId, InputDeviceId, static_cast<float>(TouchAxisY));
 	}
 
 	if (GetDefault<UDsSettings>()->bEmitMouseEventsFromTouchpad)

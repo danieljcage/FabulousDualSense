@@ -4,6 +4,7 @@
 
 #include "DsConstants.h"
 #include "IInputDevice.h"
+#include "Containers/StaticArray.h"
 
 enum class EInputDeviceTriggerMask : uint8;
 struct FInputDeviceLightColorProperty;
@@ -22,7 +23,7 @@ struct FABULOUSDUALSENSE_API FDsExtraState
 	uint8 ForceFeedbackRightLarge{0};
 	uint8 ForceFeedbackRightSmall{0};
 
-	bool bOutputChanged{true};
+	uint8 bOutputChanged : 1 {true};
 };
 
 class FABULOUSDUALSENSE_API FDsInputDevice : public IInputDevice
@@ -34,13 +35,13 @@ private:
 
 	float ButtonRepeatDelay{0.1f};
 
-	DS5W::DeviceContext DeviceContexts[DsConstants::MaxDevicesCount]{};
+	TStaticArray<DS5W::DeviceContext, DsConstants::MaxDevicesCount> DeviceContexts{InPlace, DS5W::DeviceContext{}};
 
-	DS5W::DS5InputState InputStates[DsConstants::MaxDevicesCount]{};
+	TStaticArray<DS5W::DS5InputState, DsConstants::MaxDevicesCount> InputStates{InPlace, DS5W::DS5InputState{}};
 
-	DS5W::DS5OutputState OutputStates[DsConstants::MaxDevicesCount]{};
+	TStaticArray<DS5W::DS5OutputState, DsConstants::MaxDevicesCount> OutputStates{InPlace, DS5W::DS5OutputState{}};
 
-	FDsExtraState ExtraStates[DsConstants::MaxDevicesCount]{};
+	TStaticArray<FDsExtraState, DsConstants::MaxDevicesCount> ExtraStates;
 
 public:
 	explicit FDsInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& MessageHandler);
